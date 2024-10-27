@@ -7,38 +7,40 @@ import (
 	"time"
 )
 
-// Producer generates data for the consumer.
-type Producer struct {
+// Producer generates data for the consumer with a customizable data type.
+type Producer[T any] struct {
 	id    int
-	data  chan interface{}
+	data  chan T
 	state string
 	mu    sync.RWMutex
 }
 
-func NewProducer(id, bufferSize int) *Producer {
-	return &Producer{id: id, data: make(chan interface{}, bufferSize), state: "idle"}
+// NewProducer creates a new producer with a specified buffer size.
+func NewProducer[T any](id, bufferSize int) *Producer[T] {
+	return &Producer[T]{id: id, data: make(chan T, bufferSize), state: "idle"}
 }
 
 // SetState updates the state of the producer.
-func (p *Producer) SetState(state string) {
+func (p *Producer[T]) SetState(state string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.state = state
 }
 
 // GetState retrieves the current state of the producer.
-func (p *Producer) GetState() string {
+func (p *Producer[T]) GetState() string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.state
 }
 
-// Produce method for the Producer to simulate data generation.
-func (p *Producer) Produce(ctx context.Context, generateData func(int) interface{}) {
+// Produce generates data using a custom generation function.
+func (p *Producer[T]) Produce(ctx context.Context, generateData func(int) T) {
 	p.SetState("active")
 	for i := 0; ; i++ {
 		select {
 		case <-ctx.Done():
+			p.SetState("stopped")
 			close(p.data)
 			return
 		case p.data <- generateData(i): // Use callback to generate data
@@ -46,20 +48,18 @@ func (p *Producer) Produce(ctx context.Context, generateData func(int) interface
 	}
 }
 
-// Dispatcher coordinates multiple producers and a single consumer.
-type Dispatcher struct {
-	producers []*Producer
+// Dispatcher coordinates data flow from multiple producers to a single consumer.
+type Dispatcher[T any] struct {
+	producers []*Producer[T]
 }
 
 // NewDispatcher creates a dispatcher for the given producers.
-func NewDispatcher(producers []*Producer) *Dispatcher {
-	return &Dispatcher{
-		producers: producers,
-	}
+func NewDispatcher[T any](producers []*Producer[T]) *Dispatcher[T] {
+	return &Dispatcher[T]{producers: producers}
 }
 
 // Dispatch sends data from producers to the consumer on demand.
-func (d *Dispatcher) Dispatch(ctx context.Context, consumer *Consumer) {
+func (d *Dispatcher[T]) Dispatch(ctx context.Context, consumer *Consumer[T]) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -82,49 +82,50 @@ func (d *Dispatcher) Dispatch(ctx context.Context, consumer *Consumer) {
 	}
 }
 
-// Consumer processes data received from producers.
-type Consumer struct {
+// Consumer processes data received from producers with a customizable aggregation and processing logic.
+type Consumer[T any] struct {
 	id              int
 	request         chan struct{}
-	data            chan interface{}
+	data            chan T
 	timeout         time.Duration
 	stitchingLock   sync.Mutex
-	stitchData      map[string]interface{}
-	processCallback func(map[string]interface{}) // Callback for stitching logic
-	requiredParts   []string                     // List of required parts for stitching
-	state           string                       // Track consumer state
+	stitchData      map[string]T
+	processCallback func(map[string]T) // Callback for stitching logic
+	requiredParts   []string           // List of required parts for stitching
+	state           string             // Track consumer state
 	mu              sync.RWMutex
 }
 
-// NewConsumer creates a new consumer with a given timeout and callback for processing.
-func NewConsumer(id int, timeout time.Duration, requiredParts []string, processCallback func(map[string]interface{})) *Consumer {
-	return &Consumer{
+// NewConsumer creates a new consumer with a given timeout and processing callback.
+func NewConsumer[T any](id int, timeout time.Duration, requiredParts []string, processCallback func(map[string]T)) *Consumer[T] {
+	return &Consumer[T]{
 		id:              id,
 		request:         make(chan struct{}),
-		data:            make(chan interface{}),
+		data:            make(chan T),
 		timeout:         timeout,
-		stitchData:      make(map[string]interface{}),
+		stitchData:      make(map[string]T),
 		processCallback: processCallback,
 		requiredParts:   requiredParts,
 		state:           "idle",
 	}
 }
 
-func (c *Consumer) SetState(state string) {
+// SetState updates the state of the consumer.
+func (c *Consumer[T]) SetState(state string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.state = state
 }
 
 // GetState retrieves the current state of the consumer.
-func (c *Consumer) GetState() string {
+func (c *Consumer[T]) GetState() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.state
 }
 
 // AggregateAndProcess handles data parts and processes them when all required parts are available.
-func (c *Consumer) AggregateAndProcess(partName string, data interface{}) {
+func (c *Consumer[T]) AggregateAndProcess(partName string, data T) {
 	c.stitchingLock.Lock()
 	defer c.stitchingLock.Unlock()
 
@@ -143,12 +144,12 @@ func (c *Consumer) AggregateAndProcess(partName string, data interface{}) {
 	// Process if all parts are present
 	if allPartsPresent {
 		c.processCallback(c.stitchData)
-		c.stitchData = make(map[string]interface{}) // Reset for the next aggregation
+		c.stitchData = make(map[string]T) // Reset for the next aggregation
 	}
 }
 
 // Consume requests and processes data with a timeout.
-func (c *Consumer) Consume(ctx context.Context) {
+func (c *Consumer[T]) Consume(ctx context.Context) {
 	c.SetState("active")
 	for {
 		select {
@@ -161,13 +162,10 @@ func (c *Consumer) Consume(ctx context.Context) {
 
 			select {
 			case partData := <-c.data:
-				// Here we assume that the part name is provided along with data.
-				// This can be modified based on how the data format needs to be handled.
-				if part, ok := partData.(map[string]interface{}); ok {
-					if partName, found := part["part"].(string); found {
-						c.AggregateAndProcess(partName, part["data"])
-					}
-				}
+				// Here we assume part name and data are structured appropriately.
+				// This could be customized depending on data structure.
+				partName, data := c.parseData(partData) // Implement parseData based on your requirements
+				c.AggregateAndProcess(partName, data)
 			case <-timeoutCtx.Done():
 				if timeoutCtx.Err() == context.DeadlineExceeded {
 					log.Printf("Consumer %d timeout exceeded, no data received", c.id)
@@ -176,4 +174,13 @@ func (c *Consumer) Consume(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// parseData simulates parsing of data to get part name and data.
+// In a real implementation, you'd need to define how part names are derived from data items.
+func (c *Consumer[T]) parseData(data T) (string, T) {
+	// Customize this method to extract part name from your data type
+	// For example, if T is a map or struct, access fields to determine partName
+	partName := "example_part" // Placeholder; update based on actual data structure
+	return partName, data
 }

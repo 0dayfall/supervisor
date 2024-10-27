@@ -2,50 +2,94 @@ package genstage
 
 import (
 	"context"
-	"fmt"
-	"log"
+	"sync"
 	"time"
 )
 
-// Producer produces data items.
-type Producer struct {
-	data chan int
+// Producer represents a data generator that feeds into the dispatcher.
+type Producer[T any] struct {
+	data           chan T
+	state          string
+	mu             sync.RWMutex
+	generateFunc   func(int) T
+	productionRate time.Duration
 }
 
-func NewProducer(bufferSize int) *Producer {
-	return &Producer{data: make(chan int, bufferSize)}
+// NewProducer creates a new producer with a specified buffer size, generation function, and rate.
+func NewProducer[T any](bufferSize int, generateFunc func(int) T, rate time.Duration) *Producer[T] {
+	return &Producer[T]{
+		data:           make(chan T, bufferSize),
+		state:          "idle",
+		generateFunc:   generateFunc,
+		productionRate: rate,
+	}
 }
 
-func (p *Producer) Produce(ctx context.Context) {
+// SetState updates the state of the producer.
+func (p *Producer[T]) SetState(state string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.state = state
+}
+
+// GetState retrieves the current state of the producer.
+func (p *Producer[T]) GetState() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.state
+}
+
+// Produce generates data items by calling the provided generation function.
+func (p *Producer[T]) Produce(ctx context.Context) {
+	p.SetState("active")
 	for i := 0; ; i++ {
 		select {
 		case <-ctx.Done():
+			p.SetState("stopped")
 			close(p.data)
 			return
-		case p.data <- i: // Producing data
-			log.Printf("Produced: %d", i)
-			time.Sleep(500 * time.Millisecond) // Simulate production delay
+		case p.data <- p.generateFunc(i):
+			time.Sleep(p.productionRate) // Control production rate
 		}
 	}
 }
 
-// Dispatcher manages demand and routes data to consumers.
-type Dispatcher struct {
-	producer *Producer
-	demand   chan int
+// Dispatcher coordinates data flow from producer to consumer.
+type Dispatcher[T any] struct {
+	producer *Producer[T]
+	state    string
+	mu       sync.RWMutex
 }
 
-func NewDispatcher(producer *Producer) *Dispatcher {
-	return &Dispatcher{
+// NewDispatcher creates a dispatcher for the given producer.
+func NewDispatcher[T any](producer *Producer[T]) *Dispatcher[T] {
+	return &Dispatcher[T]{
 		producer: producer,
-		demand:   make(chan int),
+		state:    "idle",
 	}
 }
 
-func (d *Dispatcher) Dispatch(ctx context.Context, consumer *Consumer) {
+// SetState updates the state of the dispatcher.
+func (d *Dispatcher[T]) SetState(state string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.state = state
+}
+
+// GetState retrieves the current state of the dispatcher.
+func (d *Dispatcher[T]) GetState() string {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.state
+}
+
+// Dispatch sends data from producer to consumer on demand.
+func (d *Dispatcher[T]) Dispatch(ctx context.Context, consumer *Consumer[T]) {
+	d.SetState("active")
 	for {
 		select {
 		case <-ctx.Done():
+			d.SetState("stopped")
 			return
 		case <-consumer.request:
 			select {
@@ -55,38 +99,65 @@ func (d *Dispatcher) Dispatch(ctx context.Context, consumer *Consumer) {
 				}
 				consumer.data <- data
 			case <-ctx.Done():
+				d.SetState("stopped")
 				return
 			}
 		}
 	}
 }
 
-// Consumer requests and consumes data, controlling demand.
-type Consumer struct {
-	request chan struct{}
-	data    chan int
-	id      int
+// Consumer represents a data consumer that processes items on demand.
+type Consumer[T any] struct {
+	request         chan struct{}
+	data            chan T
+	id              int
+	state           string
+	mu              sync.RWMutex
+	processFunc     func(T)
+	consumptionRate time.Duration
 }
 
-func NewConsumer(id int) *Consumer {
-	return &Consumer{
-		request: make(chan struct{}),
-		data:    make(chan int),
-		id:      id,
+// NewConsumer creates a new consumer with a processing function and ID.
+func NewConsumer[T any](id int, processFunc func(T), rate time.Duration) *Consumer[T] {
+	return &Consumer[T]{
+		request:         make(chan struct{}),
+		data:            make(chan T),
+		id:              id,
+		state:           "idle",
+		processFunc:     processFunc,
+		consumptionRate: rate,
 	}
 }
 
-func (c *Consumer) Consume(ctx context.Context) {
+// SetState updates the state of the consumer.
+func (c *Consumer[T]) SetState(state string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.state = state
+}
+
+// GetState retrieves the current state of the consumer.
+func (c *Consumer[T]) GetState() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.state
+}
+
+// Consume processes data items received from the dispatcher.
+func (c *Consumer[T]) Consume(ctx context.Context) {
+	c.SetState("active")
 	for {
 		select {
 		case <-ctx.Done():
+			c.SetState("stopped")
 			return
-		case c.request <- struct{}{}: // Signal demand
+		case c.request <- struct{}{}:
 			select {
 			case data := <-c.data:
-				fmt.Printf("Consumer %d consumed: %d\n", c.id, data)
-				time.Sleep(1 * time.Second) // Simulate consumption delay
+				c.processFunc(data) // Process data using the provided function
+				time.Sleep(c.consumptionRate)
 			case <-ctx.Done():
+				c.SetState("stopped")
 				return
 			}
 		}
