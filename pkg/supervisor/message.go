@@ -1,4 +1,4 @@
-package message
+package supervisor
 
 // Define a Message type
 type Message struct {

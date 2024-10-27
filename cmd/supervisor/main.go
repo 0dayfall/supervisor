@@ -1,15 +1,14 @@
-package main
+package supervisor
 
 import (
 	"context"
-	"edbtest/supervisor/message"
-	"edbtest/supervisor/supervisor"
 	"log"
+	"supervisor/pkg/supervisor"
 	"time"
 )
 
 func main() {
-	worker := func(ctx context.Context, message chan message.Message) error {
+	worker := func(ctx context.Context, message chan supervisor.Message) error {
 		log.Println("Worker started")
 		time.Sleep(1 * time.Second)
 
