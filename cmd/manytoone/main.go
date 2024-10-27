@@ -2,7 +2,6 @@ package manytoone
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"supervisor/pkg/manytoone"
 	"time"
@@ -13,31 +12,30 @@ func main() {
 	defer cancel()
 
 	// Define how to generate data in the producer (for example, GeoJSON)
-	generateData := func(i int) interface{} {
+	generateData := func(i int) map[string]interface{} {
 		return map[string]interface{}{
-			"part": "coordinates",
-			"data": map[string]float64{"lat": 12.34, "lon": 56.78},
+			"part": fmt.Sprintf("part%d", i%2), // Simulate alternating parts
+			"data": i * 10,                     // Example data
 		}
 	}
 
-	producer1 := manytoone.NewProducer(1, 10)
-	producer2 := manytoone.NewProducer(2, 10)
+	producer1 := manytoone.NewProducer[map[string]interface{}](1, 10)
+	producer2 := manytoone.NewProducer[map[string]interface{}](2, 10)
 
 	// Start producers with a data generation function
 	go producer1.Produce(ctx, generateData)
 	go producer2.Produce(ctx, generateData)
 
 	// Create dispatcher and add producers
-	dispatcher := manytoone.NewDispatcher([]*manytoone.Producer{producer1, producer2})
+	dispatcher := manytoone.NewDispatcher([]*manytoone.Producer[map[string]interface{}]{producer1, producer2})
 
 	// Define callback for processing the stitched data
-	processCallback := func(data map[string]interface{}) {
-		jsonData, _ := json.Marshal(data)
-		fmt.Printf("Processed JSON data: %s\n", jsonData)
+	processCallback := func(data map[string]map[string]interface{}) {
+		fmt.Printf("Processed data: %v\n", data)
 	}
 
 	// Create consumer with required parts and processing callback
-	consumer := manytoone.NewConsumer(1, 2*time.Second, []string{"coordinates"}, processCallback)
+	consumer := manytoone.NewConsumer[map[string]interface{}](1, 2*time.Second, []string{"part0", "part1"}, processCallback)
 
 	// Start consumer
 	go consumer.Consume(ctx)
