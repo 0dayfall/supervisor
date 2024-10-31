@@ -1,3 +1,4 @@
+
 # Go Concurrency Framework: Supervisor, Many-to-One, and GenStage Packages
 
 ![Go Version](https://img.shields.io/badge/Go-1.19-blue) ![License](https://img.shields.io/badge/license-MIT-green)
@@ -41,3 +42,72 @@ Clone the repository and use Go modules to integrate the desired packages into y
 
 ```bash
 git clone https://github.com/username/repo.git
+```
+
+Import the packages as needed:
+
+```go
+import "github.com/username/repo/supervisor"
+import "github.com/username/repo/manytoone"
+import "github.com/username/repo/genstage"
+```
+
+## Usage
+
+### Supervisor Package Example
+
+```go
+task := func(ctx context.Context, msgChan chan Message) error {
+    // Simulate task logic
+    return nil
+}
+
+supervisor := supervisor.NewSupervisor(task, 3, 10*time.Second, 2*time.Second)
+ctx := context.Background()
+supervisor.Start(ctx)
+
+// Stop the supervisor gracefully
+supervisor.Stop()
+```
+
+### Many-to-One Package Example
+
+```go
+producer1 := manytoone.NewProducer[int](1, 100)
+producer2 := manytoone.NewProducer[int](2, 100)
+
+dispatcher := manytoone.NewDispatcher([]*manytoone.Producer[int]{producer1, producer2})
+consumer := manytoone.NewConsumer(1, 5*time.Second, []string{"part1", "part2"}, func(data map[string]int) {
+    log.Println("All parts received and processed:", data)
+})
+
+ctx := context.Background()
+go dispatcher.Dispatch(ctx, consumer)
+go consumer.Consume(ctx)
+
+go producer1.Produce(ctx, func(i int) int { return i * 2 })
+go producer2.Produce(ctx, func(i int) int { return i * 3 })
+```
+
+### GenStage Package Example
+
+```go
+producer := genstage.NewProducer[int](100, func(i int) int { return i * 2 }, 1*time.Second)
+dispatcher := genstage.NewDispatcher(producer)
+consumer := genstage.NewConsumer[int](1, func(data int) {
+    log.Printf("Processing data: %d", data)
+}, 2*time.Second)
+
+ctx := context.Background()
+go producer.Produce(ctx)
+go dispatcher.Dispatch(ctx, consumer)
+go consumer.Consume(ctx)
+```
+
+## Contributing
+
+Contributions are welcome! Please see the `CONTRIBUTING.md` file for guidelines on how to contribute to this project.
+
+## License
+
+This project is licensed under the MIT License. See the `LICENSE` file for details.
